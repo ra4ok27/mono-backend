@@ -3,7 +3,8 @@ import uuid
 import requests
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import db  # <- SQLite helpers
@@ -143,7 +144,8 @@ def create_invoice(data: dict):
             "reference": order_id,
             "destination": f"Оплата FullBody {amount} грн",
         },
-        "redirectUrl": "https://example.com/success",
+        # ✅ ПІСЛЯ ОПЛАТИ КИДАЄ НА ТВОЮ СТОРІНКУ + order_id
+        "redirectUrl": f"https://nvkv-training.com.ua/dyakuyu?order_id={order_id}",
         "webHookUrl": f"{PUBLIC_BASE_URL}/mono/webhook",
     }
 
@@ -157,3 +159,14 @@ def create_invoice(data: dict):
     mono_data = r.json()
 
     return {"order_id": order_id, "payUrl": mono_data["pageUrl"]}
+
+
+# -----------------------------
+# ✅ НОВИЙ РОУТ: /pay?amount=950 або /pay?amount=1750
+#     Створює інвойс і одразу редіректить на оплату Mono
+# -----------------------------
+@app.get("/pay")
+def pay(amount: int = Query(...)):
+    # reuse наш create_invoice
+    result = create_invoice({"amount": amount})
+    return RedirectResponse(url=result["payUrl"], status_code=302)
