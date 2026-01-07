@@ -126,12 +126,20 @@ async def mono_webhook(request: Request):
 MONO_API_URL = "https://api.monobank.ua/api/merchant/invoice/create"
 
 
-@app.post("/mono/create-invoice")
-def create_invoice(data: dict):
-    amount = int(data.get("amount", 0))
+def _validate_amount(amount: int) -> int:
+    try:
+        amount = int(amount)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid amount")
 
     if amount not in (950, 1750):
-        raise HTTPException(status_code=400, detail="Invalid amount")
+        raise HTTPException(status_code=400, detail="Invalid amount (allowed: 950, 1750)")
+    return amount
+
+
+@app.post("/mono/create-invoice")
+def create_invoice(data: dict):
+    amount = _validate_amount(data.get("amount", 0))
 
     order_id = f"order_{uuid.uuid4().hex}"
 
@@ -166,7 +174,7 @@ def create_invoice(data: dict):
 #     Створює інвойс і одразу редіректить на оплату Mono
 # -----------------------------
 @app.get("/pay")
-def pay(amount: int = Query(...)):
-    # reuse наш create_invoice
+def pay(amount: int = Query(..., description="Allowed: 950 or 1750")):
+    amount = _validate_amount(amount)
     result = create_invoice({"amount": amount})
     return RedirectResponse(url=result["payUrl"], status_code=302)
