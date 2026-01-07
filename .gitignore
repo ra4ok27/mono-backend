@@ -1,0 +1,5 @@
+.env
+.env.prod
+orders.db
+__pycache__/
+.DS_Store
