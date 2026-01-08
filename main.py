@@ -49,8 +49,8 @@ MONO_X_TOKEN = os.getenv("MONO_X_TOKEN")
 # ✅ для "Дякую" (посилання на бота)
 BOT_USERNAME = os.getenv("BOT_USERNAME", "nvkv_fullbody_bot").lstrip("@")
 
-# ✅ інвайти (тест: 200 замість 950)
-TG_INVITE_200 = os.getenv("TG_INVITE_200", "")
+# ✅ інвайти для тарифів (950 / 1750)
+TG_INVITE_950 = os.getenv("TG_INVITE_950", "")
 TG_INVITE_1750 = os.getenv("TG_INVITE_1750", "")
 
 # Публічний base URL для webhook'а (ngrok зараз, потім буде домен/сервер)
@@ -74,8 +74,8 @@ if not ADMIN_CHAT_ID:
 if not MONO_X_TOKEN:
     raise RuntimeError("ENV MONO_X_TOKEN is missing")
 
-if not TG_INVITE_200:
-    raise RuntimeError("ENV TG_INVITE_200 is missing (put channel invite link for test 200)")
+if not TG_INVITE_950:
+    raise RuntimeError("ENV TG_INVITE_950 is missing (put channel invite link for 950)")
 
 if not TG_INVITE_1750:
     raise RuntimeError("ENV TG_INVITE_1750 is missing (put channel invite link for 1750)")
@@ -157,17 +157,14 @@ MONO_API_URL = "https://api.monobank.ua/api/merchant/invoice/create"
 
 
 def _validate_amount(amount: int) -> int:
-    """
-    🔧 ТЕСТ:
-    200 грн замість 950
-    """
+    """✅ Прод: тільки 950 та 1750"""
     try:
         amount = int(amount)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid amount")
 
-    if amount not in (200, 1750):
-        raise HTTPException(status_code=400, detail="Invalid amount (allowed: 200, 1750)")
+    if amount not in (950, 1750):
+        raise HTTPException(status_code=400, detail="Invalid amount (allowed: 950, 1750)")
     return amount
 
 
@@ -204,10 +201,10 @@ def create_invoice(data: dict):
 
 
 # -----------------------------
-# ✅ /pay?amount=200 або /pay?amount=1750
+# ✅ /pay?amount=950 або /pay?amount=1750
 # -----------------------------
 @app.get("/pay")
-def pay(amount: int = Query(..., description="Allowed: 200 or 1750")):
+def pay(amount: int = Query(..., description="Allowed: 950 or 1750")):
     amount = _validate_amount(amount)
     result = create_invoice({"amount": amount})
     return RedirectResponse(url=result["payUrl"], status_code=302)
@@ -262,7 +259,13 @@ def tg_claim(body: TgClaimRequest):
     amount = int(order.get("amount") or 0)
 
     # ✅ вибір інвайта по тарифу
-    invite = TG_INVITE_200 if amount == 200 else TG_INVITE_1750
+    if amount == 950:
+        invite = TG_INVITE_950
+    elif amount == 1750:
+        invite = TG_INVITE_1750
+    else:
+        # якщо в БД раптом лежить інша сума — не віддавати доступ
+        raise HTTPException(status_code=400, detail="Invalid tariff amount in order")
 
     ok = db.claim_once_by_token(token)
     if not ok:
