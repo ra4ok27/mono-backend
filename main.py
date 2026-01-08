@@ -5,6 +5,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import db  # <- SQLite helpers
@@ -23,11 +24,34 @@ app = FastAPI()
 db.init_db()  # <- create orders.db + table if not exists
 
 # -----------------------------
+# ✅ CORS (для сторінки "Дякую" + Telegram WebView)
+# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://nvkv-training.com.ua",
+        "https://www.nvkv-training.com.ua",
+        "http://localhost",
+        "http://localhost:3000",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------
 # ENV
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # лишаємо як було
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MONO_X_TOKEN = os.getenv("MONO_X_TOKEN")
+
+# ✅ для "Дякую" (посилання на бота)
+BOT_USERNAME = os.getenv("BOT_USERNAME", "nvkv_fullbody_bot").lstrip("@")
+
+# ✅ інвайти (тест: 200 замість 950)
+TG_INVITE_200 = os.getenv("TG_INVITE_200", "")
+TG_INVITE_1750 = os.getenv("TG_INVITE_1750", "")
 
 # Публічний base URL для webhook'а (ngrok зараз, потім буде домен/сервер)
 PUBLIC_BASE_URL = os.getenv(
@@ -38,6 +62,9 @@ PUBLIC_BASE_URL = os.getenv(
 # (опційно) тестовий токен для захисту тест-ендпойнта
 TEST_TOKEN = os.getenv("TEST_TOKEN", "")  # в проді можна прибрати
 
+# -----------------------------
+# REQUIRED ENV CHECKS
+# -----------------------------
 if not BOT_TOKEN:
     raise RuntimeError("ENV BOT_TOKEN is missing")
 
@@ -46,6 +73,12 @@ if not ADMIN_CHAT_ID:
 
 if not MONO_X_TOKEN:
     raise RuntimeError("ENV MONO_X_TOKEN is missing")
+
+if not TG_INVITE_200:
+    raise RuntimeError("ENV TG_INVITE_200 is missing (put channel invite link for test 200)")
+
+if not TG_INVITE_1750:
+    raise RuntimeError("ENV TG_INVITE_1750 is missing (put channel invite link for 1750)")
 
 # -----------------------------
 # ROUTES
@@ -77,6 +110,7 @@ async def test_mark_paid(body: TestMarkPaidRequest, request: Request):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
+    # просто ставимо paid
     db.set_paid(body.order_id)
     return {"status": "ok", "order_id": body.order_id, "order": db.get_order(body.order_id)}
 
@@ -109,7 +143,7 @@ async def mono_webhook(request: Request):
         amount_uah = round(amount_cents / 100)
 
     if status == "success":
-        # ВАЖЛИВО: set_paid не затирає tariff amount у БД
+        # ВАЖЛИВО: set_paid не затирає tariff amount у БД (в db.py ми це вже виправили)
         db.set_paid(reference, amount_uah)
         print(f"✅ ORDER PAID: {reference} amount={amount_uah}")
 
@@ -170,8 +204,7 @@ def create_invoice(data: dict):
 
 
 # -----------------------------
-# ✅ НОВИЙ РОУТ: /pay?amount=200 або /pay?amount=1750
-#     Створює інвойс і одразу редіректить на оплату Mono
+# ✅ /pay?amount=200 або /pay?amount=1750
 # -----------------------------
 @app.get("/pay")
 def pay(amount: int = Query(..., description="Allowed: 200 or 1750")):
@@ -198,13 +231,12 @@ def exchange_token(order_id: str = Query(...)):
         token = uuid.uuid4().hex
         db.set_token(order_id, token)
 
-    return {"status": "ok", "token": token}
+    return {"status": "ok", "token": token, "bot": BOT_USERNAME}
 
 
 # -----------------------------
 # ✅ /tg/claim (для Telegram бота)
-#     Приймає token, перевіряє paid + not claimed, і "спалює" token
-#     (інвайт генерує БОТ напряму через Telegram API)
+#     Приймає token, перевіряє paid + not claimed, віддає invite і "спалює" token
 # -----------------------------
 class TgClaimRequest(BaseModel):
     token: str
@@ -229,9 +261,11 @@ def tg_claim(body: TgClaimRequest):
 
     amount = int(order.get("amount") or 0)
 
+    # ✅ вибір інвайта по тарифу
+    invite = TG_INVITE_200 if amount == 200 else TG_INVITE_1750
+
     ok = db.claim_once_by_token(token)
     if not ok:
         raise HTTPException(status_code=409, detail="Already claimed")
 
-    # ✅ інвайт робить бот, ми віддаємо тільки amount
-    return {"status": "ok", "amount": amount}
+    return {"status": "ok", "invite": invite, "amount": amount}
