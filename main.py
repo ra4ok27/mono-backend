@@ -4,7 +4,7 @@ import requests
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel
 
 import db  # <- SQLite helpers
@@ -29,6 +29,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")  # поки лишаємо, бо в тебе 
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MONO_X_TOKEN = os.getenv("MONO_X_TOKEN")
 
+# ✅ НОВЕ (token flow)
+BOT_USERNAME = os.getenv("BOT_USERNAME", "nvkv_fullbody_bot").lstrip("@")
+TG_INVITE_950 = os.getenv("TG_INVITE_950", "")
+TG_INVITE_1750 = os.getenv("TG_INVITE_1750", "")
+
 # Публічний base URL для webhook'а (ngrok зараз, потім буде домен/сервер)
 PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL",
@@ -46,6 +51,12 @@ if not ADMIN_CHAT_ID:
 
 if not MONO_X_TOKEN:
     raise RuntimeError("ENV MONO_X_TOKEN is missing")
+
+# ✅ НОВЕ: перевірки інвайтів
+if not TG_INVITE_950:
+    raise RuntimeError("ENV TG_INVITE_950 is missing")
+if not TG_INVITE_1750:
+    raise RuntimeError("ENV TG_INVITE_1750 is missing")
 
 # -----------------------------
 # ROUTES
@@ -178,3 +189,59 @@ def pay(amount: int = Query(..., description="Allowed: 950 or 1750")):
     amount = _validate_amount(amount)
     result = create_invoice({"amount": amount})
     return RedirectResponse(url=result["payUrl"], status_code=302)
+
+
+# -----------------------------
+# ✅ НОВЕ: /api/exchange-token?order_id=...
+#     Повертає token тільки якщо paid
+# -----------------------------
+@app.get("/api/exchange-token")
+def exchange_token(order_id: str = Query(...)):
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.get("status") != "paid":
+        return JSONResponse({"status": "pending"}, status_code=200)
+
+    token = order.get("access_token")
+    if not token:
+        token = uuid.uuid4().hex
+        db.set_token(order_id, token)
+
+    return {"status": "ok", "token": token, "bot": BOT_USERNAME}
+
+
+# -----------------------------
+# ✅ НОВЕ: /tg/claim (для Telegram бота)
+#     Приймає token, перевіряє paid + not claimed, віддає invite і "спалює" token
+# -----------------------------
+class TgClaimRequest(BaseModel):
+    token: str
+    chat_id: int | None = None
+
+
+@app.post("/tg/claim")
+def tg_claim(body: TgClaimRequest):
+    token = (body.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing token")
+
+    order = db.get_order_by_token(token)
+    if not order:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    if order.get("status") != "paid":
+        raise HTTPException(status_code=400, detail="Order not paid")
+
+    if int(order.get("claimed") or 0) == 1:
+        raise HTTPException(status_code=409, detail="Already claimed")
+
+    amount = int(order.get("amount") or 0)
+    invite = TG_INVITE_950 if amount == 950 else TG_INVITE_1750
+
+    ok = db.claim_once_by_token(token)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Already claimed")
+
+    return {"status": "ok", "invite": invite, "amount": amount}
