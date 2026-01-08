@@ -25,14 +25,9 @@ db.init_db()  # <- create orders.db + table if not exists
 # -----------------------------
 # ENV
 # -----------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # поки лишаємо, бо в тебе є перевірки
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # лишаємо як було
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MONO_X_TOKEN = os.getenv("MONO_X_TOKEN")
-
-# ✅ НОВЕ (token flow)
-BOT_USERNAME = os.getenv("BOT_USERNAME", "nvkv_fullbody_bot").lstrip("@")
-TG_INVITE_950 = os.getenv("TG_INVITE_950", "")
-TG_INVITE_1750 = os.getenv("TG_INVITE_1750", "")
 
 # Публічний base URL для webhook'а (ngrok зараз, потім буде домен/сервер)
 PUBLIC_BASE_URL = os.getenv(
@@ -51,12 +46,6 @@ if not ADMIN_CHAT_ID:
 
 if not MONO_X_TOKEN:
     raise RuntimeError("ENV MONO_X_TOKEN is missing")
-
-# ✅ НОВЕ: перевірки інвайтів
-if not TG_INVITE_950:
-    raise RuntimeError("ENV TG_INVITE_950 is missing")
-if not TG_INVITE_1750:
-    raise RuntimeError("ENV TG_INVITE_1750 is missing")
 
 # -----------------------------
 # ROUTES
@@ -88,12 +77,7 @@ async def test_mark_paid(body: TestMarkPaidRequest, request: Request):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # поставимо paid
-    if body.amount is not None:
-        db.set_paid(body.order_id, int(body.amount))
-    else:
-        db.set_paid(body.order_id)
-
+    db.set_paid(body.order_id)
     return {"status": "ok", "order_id": body.order_id, "order": db.get_order(body.order_id)}
 
 
@@ -125,6 +109,7 @@ async def mono_webhook(request: Request):
         amount_uah = round(amount_cents / 100)
 
     if status == "success":
+        # ВАЖЛИВО: set_paid не затирає tariff amount у БД
         db.set_paid(reference, amount_uah)
         print(f"✅ ORDER PAID: {reference} amount={amount_uah}")
 
@@ -138,13 +123,17 @@ MONO_API_URL = "https://api.monobank.ua/api/merchant/invoice/create"
 
 
 def _validate_amount(amount: int) -> int:
+    """
+    🔧 ТЕСТ:
+    200 грн замість 950
+    """
     try:
         amount = int(amount)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid amount")
 
-    if amount not in (950, 1750):
-        raise HTTPException(status_code=400, detail="Invalid amount (allowed: 950, 1750)")
+    if amount not in (200, 1750):
+        raise HTTPException(status_code=400, detail="Invalid amount (allowed: 200, 1750)")
     return amount
 
 
@@ -181,18 +170,18 @@ def create_invoice(data: dict):
 
 
 # -----------------------------
-# ✅ НОВИЙ РОУТ: /pay?amount=950 або /pay?amount=1750
+# ✅ НОВИЙ РОУТ: /pay?amount=200 або /pay?amount=1750
 #     Створює інвойс і одразу редіректить на оплату Mono
 # -----------------------------
 @app.get("/pay")
-def pay(amount: int = Query(..., description="Allowed: 950 or 1750")):
+def pay(amount: int = Query(..., description="Allowed: 200 or 1750")):
     amount = _validate_amount(amount)
     result = create_invoice({"amount": amount})
     return RedirectResponse(url=result["payUrl"], status_code=302)
 
 
 # -----------------------------
-# ✅ НОВЕ: /api/exchange-token?order_id=...
+# ✅ /api/exchange-token?order_id=...
 #     Повертає token тільки якщо paid
 # -----------------------------
 @app.get("/api/exchange-token")
@@ -209,12 +198,13 @@ def exchange_token(order_id: str = Query(...)):
         token = uuid.uuid4().hex
         db.set_token(order_id, token)
 
-    return {"status": "ok", "token": token, "bot": BOT_USERNAME}
+    return {"status": "ok", "token": token}
 
 
 # -----------------------------
-# ✅ НОВЕ: /tg/claim (для Telegram бота)
-#     Приймає token, перевіряє paid + not claimed, віддає invite і "спалює" token
+# ✅ /tg/claim (для Telegram бота)
+#     Приймає token, перевіряє paid + not claimed, і "спалює" token
+#     (інвайт генерує БОТ напряму через Telegram API)
 # -----------------------------
 class TgClaimRequest(BaseModel):
     token: str
@@ -238,10 +228,10 @@ def tg_claim(body: TgClaimRequest):
         raise HTTPException(status_code=409, detail="Already claimed")
 
     amount = int(order.get("amount") or 0)
-    invite = TG_INVITE_950 if amount == 950 else TG_INVITE_1750
 
     ok = db.claim_once_by_token(token)
     if not ok:
         raise HTTPException(status_code=409, detail="Already claimed")
 
-    return {"status": "ok", "invite": invite, "amount": amount}
+    # ✅ інвайт робить бот, ми віддаємо тільки amount
+    return {"status": "ok", "amount": amount}
